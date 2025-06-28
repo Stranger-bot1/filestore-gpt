@@ -1,9 +1,8 @@
-# file_store_bot.py
-
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 import sqlite3
 import uuid
+import asyncio
 
 API_ID = 24344133
 API_HASH = "edbe7000baef13fa5a6c45c8edc4be66"
@@ -19,8 +18,7 @@ cur.execute("""CREATE TABLE IF NOT EXISTS files (id TEXT, file_id TEXT, user_id 
 cur.execute("""CREATE TABLE IF NOT EXISTS batches (batch_id TEXT, user_id INTEGER, file_ids TEXT)""")
 conn.commit()
 
-user_temp_files = {}  # Temporary storage for file decisions
-user_batch_selections = {}
+user_temp_files = {}  # Temporarily hold files per user
 
 
 def save_file(file_id, user_id, file_name):
@@ -59,70 +57,76 @@ def get_batch_files(batch_id):
 @app.on_message(filters.private & filters.document)
 async def handle_file(client, message):
     user_id = message.from_user.id
+
+    if user_id not in user_temp_files:
+        user_temp_files[user_id] = []
+
     file_id = message.document.file_id
     file_name = message.document.file_name
 
-    # Temporarily store file
-    user_temp_files[user_id] = {'file_id': file_id, 'file_name': file_name}
+    user_temp_files[user_id].append({'file_id': file_id, 'file_name': file_name})
 
-    # Ask user for action
+    await message.reply_text("✅ File received. Send more files or type /done when you have finished uploading.")
+
+
+@app.on_message(filters.command('done'))
+async def ask_file_action(client, message):
+    user_id = message.from_user.id
+
+    if user_id not in user_temp_files or not user_temp_files[user_id]:
+        await message.reply_text("❌ You have not sent any files.")
+        return
+
     buttons = [
-        [InlineKeyboardButton("✅ Single File Link", callback_data="singlefile")],
-        [InlineKeyboardButton("📦 Add to Batch", callback_data="addtobatch")]
+        [InlineKeyboardButton("✅ Create Single File Links", callback_data="singlefile")],
+        [InlineKeyboardButton("📦 Create Batch Link", callback_data="batchfile")]
     ]
+
     await message.reply_text(
-        "❓ What do you want to do with this file?",
+        "❓ Do you want to create individual file links or one batch link for all your uploaded files?",
         reply_markup=InlineKeyboardMarkup(buttons)
     )
 
 
 @app.on_callback_query()
-async def handle_callback(client, callback_query):
+async def handle_file_decision(client, callback_query):
     user_id = callback_query.from_user.id
-    data = callback_query.data
 
-    if user_id not in user_temp_files:
-        await callback_query.answer("❌ No file found. Please send a file first.", show_alert=True)
+    if user_id not in user_temp_files or not user_temp_files[user_id]:
+        await callback_query.message.reply_text("❌ You have no files to process.")
+        await callback_query.answer()
         return
 
-    file_info = user_temp_files[user_id]
-    file_id = file_info['file_id']
-    file_name = file_info['file_name']
+    files = user_temp_files[user_id]
 
-    if data == "singlefile":
-        file_unique_id = save_file(file_id, user_id, file_name)
-        link = f"https://t.me/{BOT_USERNAME}?start={file_unique_id}"
-        await callback_query.message.reply_text(f"✅ Single File Link Created:\n{link}")
-        user_temp_files.pop(user_id)
+    if callback_query.data == "singlefile":
+        msg = "✅ Here are your individual file links:\n\n"
+        for file in files:
+            file_unique_id = save_file(file['file_id'], user_id, file['file_name'])
+            link = f"https://t.me/{BOT_USERNAME}?start={file_unique_id}"
+            msg += f"📄 {file['file_name']}\n🔗 {link}\n\n"
+
+        await callback_query.message.reply_text(msg)
+        user_temp_files[user_id] = []
         await callback_query.answer()
 
-    elif data == "addtobatch":
-        if user_id not in user_batch_selections:
-            user_batch_selections[user_id] = []
+    elif callback_query.data == "batchfile":
+        file_ids = []
+        for file in files:
+            file_unique_id = save_file(file['file_id'], user_id, file['file_name'])
+            file_ids.append(file_unique_id)
 
-        file_unique_id = save_file(file_id, user_id, file_name)
-        user_batch_selections[user_id].append(file_unique_id)
+        batch_id = create_batch(user_id, file_ids)
+        batch_link = f"https://t.me/{BOT_USERNAME}?start=batch_{batch_id}"
+        await callback_query.message.reply_text(f"✅ Batch link created successfully!\nHere is your link:\n{batch_link}")
 
-        await callback_query.message.reply_text("✅ File added to batch.\nSend more files or use /createbatch to generate your batch link.")
-        user_temp_files.pop(user_id)
+        user_temp_files[user_id] = []
         await callback_query.answer()
 
 
 @app.on_message(filters.command('createbatch'))
-async def create_batch_command(client, message):
-    user_id = message.from_user.id
-    selected_files = user_batch_selections.get(user_id, [])
-
-    if not selected_files:
-        await message.reply_text("❌ You have no files selected for batch.")
-        return
-
-    batch_id = create_batch(user_id, selected_files)
-    batch_link = f"https://t.me/{BOT_USERNAME}?start=batch_{batch_id}"
-    await message.reply_text(f"✅ Batch Created Successfully!\nHere is your link:\n{batch_link}")
-
-    # Clear batch selection
-    user_batch_selections[user_id] = []
+async def createbatch_warning(client, message):
+    await message.reply_text("⚠️ Use the new system. Send all your files first, then type /done to proceed.")
 
 
 @app.on_message(filters.command('start'))
@@ -130,12 +134,13 @@ async def start(client, message):
     if len(message.command) == 1:
         await message.reply_text(
             "👋 Welcome to File Store Bot!\n\n"
-            "📂 Send me any file and I'll give you options to create:\n"
-            "✅ Single File Link\n"
-            "📦 Batch File Link\n\n"
-            "🗂️ /myfiles - View your files\n"
-            "📦 /createbatch - Create a batch of files\n"
-            "📁 /mybatches - View your batches"
+            "📂 Send me multiple files one after another.\n"
+            "✅ When you finish sending, type /done.\n\n"
+            "You can choose to create:\n"
+            "1️⃣ Single File Links\n"
+            "2️⃣ One Batch Link\n\n"
+            "🗂️ /myfiles - View your file history\n"
+            "📁 /mybatches - View your batch history"
         )
     else:
         file_unique_id = message.command[1]
@@ -202,11 +207,11 @@ async def my_batches(client, message):
 @app.on_message(filters.command('help'))
 async def help_command(client, message):
     await message.reply_text(
-        "📂 **File Store Bot Commands**\n\n"
-        "/myfiles - View your uploaded files\n"
-        "/createbatch - Create a batch of files\n"
-        "/mybatches - View your batches\n"
-        "Send a file to get options to create Single File Link or add to Batch."
+        "📂 **File Store Bot Help**\n\n"
+        "📥 Send multiple files to me.\n"
+        "✅ When finished, type /done to choose how you want to create links.\n\n"
+        "🗂️ /myfiles - View your uploaded files\n"
+        "📦 /mybatches - View your batch history"
     )
 
 
