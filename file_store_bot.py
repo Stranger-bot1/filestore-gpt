@@ -4,7 +4,6 @@ from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 import sqlite3
 import uuid
-import os
 
 API_ID = 24344133
 API_HASH = "edbe7000baef13fa5a6c45c8edc4be66"
@@ -19,6 +18,9 @@ cur = conn.cursor()
 cur.execute("""CREATE TABLE IF NOT EXISTS files (id TEXT, file_id TEXT, user_id INTEGER, file_name TEXT)""")
 cur.execute("""CREATE TABLE IF NOT EXISTS batches (batch_id TEXT, user_id INTEGER, file_ids TEXT)""")
 conn.commit()
+
+user_temp_files = {}  # Temporary storage for file decisions
+user_batch_selections = {}
 
 
 def save_file(file_id, user_id, file_name):
@@ -56,14 +58,71 @@ def get_batch_files(batch_id):
 
 @app.on_message(filters.private & filters.document)
 async def handle_file(client, message):
+    user_id = message.from_user.id
     file_id = message.document.file_id
     file_name = message.document.file_name
+
+    # Temporarily store file
+    user_temp_files[user_id] = {'file_id': file_id, 'file_name': file_name}
+
+    # Ask user for action
+    buttons = [
+        [InlineKeyboardButton("✅ Single File Link", callback_data="singlefile")],
+        [InlineKeyboardButton("📦 Add to Batch", callback_data="addtobatch")]
+    ]
+    await message.reply_text(
+        "❓ What do you want to do with this file?",
+        reply_markup=InlineKeyboardMarkup(buttons)
+    )
+
+
+@app.on_callback_query()
+async def handle_callback(client, callback_query):
+    user_id = callback_query.from_user.id
+    data = callback_query.data
+
+    if user_id not in user_temp_files:
+        await callback_query.answer("❌ No file found. Please send a file first.", show_alert=True)
+        return
+
+    file_info = user_temp_files[user_id]
+    file_id = file_info['file_id']
+    file_name = file_info['file_name']
+
+    if data == "singlefile":
+        file_unique_id = save_file(file_id, user_id, file_name)
+        link = f"https://t.me/{BOT_USERNAME}?start={file_unique_id}"
+        await callback_query.message.reply_text(f"✅ Single File Link Created:\n{link}")
+        user_temp_files.pop(user_id)
+        await callback_query.answer()
+
+    elif data == "addtobatch":
+        if user_id not in user_batch_selections:
+            user_batch_selections[user_id] = []
+
+        file_unique_id = save_file(file_id, user_id, file_name)
+        user_batch_selections[user_id].append(file_unique_id)
+
+        await callback_query.message.reply_text("✅ File added to batch.\nSend more files or use /createbatch to generate your batch link.")
+        user_temp_files.pop(user_id)
+        await callback_query.answer()
+
+
+@app.on_message(filters.command('createbatch'))
+async def create_batch_command(client, message):
     user_id = message.from_user.id
+    selected_files = user_batch_selections.get(user_id, [])
 
-    file_unique_id = save_file(file_id, user_id, file_name)
+    if not selected_files:
+        await message.reply_text("❌ You have no files selected for batch.")
+        return
 
-    link = f"https://t.me/{BOT_USERNAME}?start={file_unique_id}"
-    await message.reply_text(f"✅ File saved successfully!\nHere is your shareable link:\n{link}")
+    batch_id = create_batch(user_id, selected_files)
+    batch_link = f"https://t.me/{BOT_USERNAME}?start=batch_{batch_id}"
+    await message.reply_text(f"✅ Batch Created Successfully!\nHere is your link:\n{batch_link}")
+
+    # Clear batch selection
+    user_batch_selections[user_id] = []
 
 
 @app.on_message(filters.command('start'))
@@ -71,7 +130,9 @@ async def start(client, message):
     if len(message.command) == 1:
         await message.reply_text(
             "👋 Welcome to File Store Bot!\n\n"
-            "📂 Send me any file and I'll give you a permanent shareable link.\n\n"
+            "📂 Send me any file and I'll give you options to create:\n"
+            "✅ Single File Link\n"
+            "📦 Batch File Link\n\n"
             "🗂️ /myfiles - View your files\n"
             "📦 /createbatch - Create a batch of files\n"
             "📁 /mybatches - View your batches"
@@ -119,50 +180,6 @@ async def my_files(client, message):
     await message.reply_text(msg)
 
 
-@app.on_message(filters.command('createbatch'))
-async def create_batch_command(client, message):
-    user_id = message.from_user.id
-    files = get_user_files(user_id)
-
-    if not files:
-        await message.reply_text("❌ You have no files to batch.")
-        return
-
-    buttons = []
-    for file in files:
-        file_id, file_name = file
-        buttons.append([InlineKeyboardButton(f"✅ {file_name}", callback_data=f"batchselect_{file_id}")])
-
-    buttons.append([InlineKeyboardButton("✔️ Create Batch", callback_data="createbatch_final")])
-
-    await message.reply_text("Select files to add to your batch:", reply_markup=InlineKeyboardMarkup(buttons))
-    app.user_batch_selections = {user_id: []}
-
-
-@app.on_callback_query()
-async def batch_selection(client, callback_query):
-    user_id = callback_query.from_user.id
-    data = callback_query.data
-
-    if data.startswith("batchselect_"):
-        file_id = data.split("_")[1]
-        if file_id not in app.user_batch_selections[user_id]:
-            app.user_batch_selections[user_id].append(file_id)
-        await callback_query.answer("✅ File added to batch")
-
-    elif data == "createbatch_final":
-        selected_files = app.user_batch_selections.get(user_id, [])
-        if not selected_files:
-            await callback_query.message.reply_text("❌ No files selected for batch.")
-            return
-
-        batch_id = create_batch(user_id, selected_files)
-        batch_link = f"https://t.me/{BOT_USERNAME}?start=batch_{batch_id}"
-        await callback_query.message.reply_text(f"✅ Batch created!\nHere is your link:\n{batch_link}")
-
-    await callback_query.answer()
-
-
 @app.on_message(filters.command('mybatches'))
 async def my_batches(client, message):
     user_id = message.from_user.id
@@ -189,7 +206,7 @@ async def help_command(client, message):
         "/myfiles - View your uploaded files\n"
         "/createbatch - Create a batch of files\n"
         "/mybatches - View your batches\n"
-        "Send a file to get a shareable link"
+        "Send a file to get options to create Single File Link or add to Batch."
     )
 
 
