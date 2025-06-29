@@ -9,7 +9,13 @@ API_HASH = "edbe7000baef13fa5a6c45c8edc4be66"
 BOT_TOKEN = "8046719850:AAGxJ6Wn63mVJCq7SAHW2sU9aIL2VmfjZig"
 BOT_USERNAME = "file_storing_gpt_bot"
 
-app = Client("file_store_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
+app = Client(
+    "file_store_bot",
+    api_id=API_ID,
+    api_hash=API_HASH,
+    bot_token=BOT_TOKEN,
+    workdir="/home/mahatomehulraj/"
+)
 
 conn = sqlite3.connect("file_store.db", check_same_thread=False)
 cur = conn.cursor()
@@ -66,7 +72,10 @@ async def handle_file(client, message):
 
     user_temp_files[user_id].append({'file_id': file_id, 'file_name': file_name})
 
-    await message.reply_text("✅ File received. Send more files or type /done when you have finished uploading.")
+    if message.forward_from_chat or message.forward_from:
+        await message.reply_text("✅ Forwarded file received. Send more files or type /done when you have finished uploading.")
+    else:
+        await message.reply_text("✅ File received. Send more files or type /done when you have finished uploading.")
 
 
 @app.on_message(filters.command('done'))
