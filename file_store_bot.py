@@ -1,5 +1,7 @@
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from flask import Flask
+from threading import Thread
 import sqlite3
 import uuid
 import asyncio
@@ -16,6 +18,23 @@ app = Client(
     bot_token=BOT_TOKEN,
     workdir="/home/mahatomehulraj/"
 )
+
+# Flask keep-alive server
+flask_app = Flask('')
+
+@flask_app.route('/')
+def home():
+    return "Bot is Alive"
+
+
+def run():
+    flask_app.run(host='0.0.0.0', port=8080)
+
+
+def keep_alive():
+    t = Thread(target=run)
+    t.start()
+
 
 conn = sqlite3.connect("file_store.db", check_same_thread=False)
 cur = conn.cursor()
@@ -224,4 +243,6 @@ async def help_command(client, message):
     )
 
 
-app.run()
+if __name__ == "__main__":
+    keep_alive()
+    app.run()
