@@ -15,8 +15,7 @@ app = Client(
     "file_store_bot",
     api_id=API_ID,
     api_hash=API_HASH,
-    bot_token=BOT_TOKEN,
-    workdir="/home/mahatomehulraj/"
+    bot_token=BOT_TOKEN
 )
 
 # Flask keep-alive server
