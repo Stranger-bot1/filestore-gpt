@@ -78,15 +78,28 @@ def get_batch_files(batch_id):
     return []
 
 
-@app.on_message(filters.private & filters.document)
+@app.on_message(filters.private & (filters.document | filters.photo | filters.video | filters.audio))
 async def handle_file(client, message):
     user_id = message.from_user.id
 
     if user_id not in user_temp_files:
         user_temp_files[user_id] = []
 
-    file_id = message.document.file_id
-    file_name = message.document.file_name
+    if message.document:
+        file_id = message.document.file_id
+        file_name = message.document.file_name
+    elif message.photo:
+        file_id = message.photo.file_id
+        file_name = "Photo.jpg"
+    elif message.video:
+        file_id = message.video.file_id
+        file_name = message.video.file_name or "Video.mp4"
+    elif message.audio:
+        file_id = message.audio.file_id
+        file_name = message.audio.file_name or "Audio.mp3"
+    else:
+        await message.reply_text("❌ Unsupported file type.")
+        return
 
     user_temp_files[user_id].append({'file_id': file_id, 'file_name': file_name})
 
