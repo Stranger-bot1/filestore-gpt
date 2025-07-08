@@ -1,5 +1,7 @@
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from flask import Flask
+from threading import Thread
 import sqlite3
 import uuid
 import asyncio
@@ -16,6 +18,23 @@ app = Client(
     bot_token=BOT_TOKEN
 )
 
+# Flask keep-alive server
+flask_app = Flask('')
+
+@flask_app.route('/')
+def home():
+    return "Bot is Alive"
+
+
+def run():
+    flask_app.run(host='0.0.0.0', port=8080)
+
+
+def keep_alive():
+    t = Thread(target=run)
+    t.start()
+
+
 conn = sqlite3.connect("file_store.db", check_same_thread=False)
 cur = conn.cursor()
 
@@ -23,7 +42,7 @@ cur.execute("""CREATE TABLE IF NOT EXISTS files (id TEXT, file_id TEXT, user_id 
 cur.execute("""CREATE TABLE IF NOT EXISTS batches (batch_id TEXT, user_id INTEGER, file_ids TEXT)""")
 conn.commit()
 
-user_temp_files = {}
+user_temp_files = {}  # Temporarily hold files per user
 
 
 def save_file(file_id, user_id, file_name):
@@ -71,13 +90,13 @@ async def handle_file(client, message):
         file_name = message.document.file_name
     elif message.photo:
         file_id = message.photo.file_id
-        file_name = "photo.jpg"
+        file_name = "Photo.jpg"
     elif message.video:
         file_id = message.video.file_id
-        file_name = "video.mp4"
+        file_name = message.video.file_name or "Video.mp4"
     elif message.audio:
         file_id = message.audio.file_id
-        file_name = message.audio.file_name or "audio.mp3"
+        file_name = message.audio.file_name or "Audio.mp3"
     else:
         await message.reply_text("❌ Unsupported file type.")
         return
@@ -145,9 +164,15 @@ async def handle_file_decision(client, callback_query):
         await callback_query.answer()
 
 
+@app.on_message(filters.command('createbatch'))
+async def createbatch_warning(client, message):
+    await message.reply_text("⚠️ Use the new system. Send all your files first, then type /done to proceed.")
+
+
 @app.on_message(filters.command('start'))
 async def start(client, message):
-    if len(message.command) == 1:
+    args = message.text.split(' ', 1)
+    if len(args) == 1:
         await message.reply_text(
             "👋 Welcome to File Store Bot!\n\n"
             "📂 Send me multiple files one after another.\n"
@@ -158,29 +183,30 @@ async def start(client, message):
             "🗂️ /myfiles - View your file history\n"
             "📁 /mybatches - View your batch history"
         )
-    else:
-        file_unique_id = message.command[1]
-        if file_unique_id.startswith('batch_'):
-            batch_id = file_unique_id.replace('batch_', '')
-            file_ids = get_batch_files(batch_id)
+        return
 
-            if not file_ids:
-                await message.reply_text("❌ Batch not found or empty.")
-                return
+    file_unique_id = args[1].strip()
+    if file_unique_id.startswith('batch_'):
+        batch_id = file_unique_id.replace('batch_', '')
+        file_ids = get_batch_files(batch_id)
 
-            await message.reply_text("📦 Sending batch files...")
-
-            for file_id in file_ids:
-                file_data = get_file(file_id)
-                if file_data:
-                    await message.reply_document(file_data[0], caption=f"{file_data[1]}")
+        if not file_ids:
+            await message.reply_text("❌ Batch not found or empty.")
             return
 
-        file_data = get_file(file_unique_id)
-        if file_data:
-            await message.reply_document(file_data[0], caption=f"Here is your file: {file_data[1]}")
-        else:
-            await message.reply_text("❌ File not found.")
+        await message.reply_text("📦 Sending batch files...")
+
+        for file_id in file_ids:
+            file_data = get_file(file_id)
+            if file_data:
+                await message.reply_document(file_data[0], caption=f"{file_data[1]}")
+        return
+
+    file_data = get_file(file_unique_id)
+    if file_data:
+        await message.reply_document(file_data[0], caption=f"Here is your file: {file_data[1]}")
+    else:
+        await message.reply_text("❌ File not found.")
 
 
 @app.on_message(filters.command('myfiles'))
@@ -232,4 +258,5 @@ async def help_command(client, message):
 
 
 if __name__ == "__main__":
+    keep_alive()
     app.run()
