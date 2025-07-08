@@ -25,42 +25,35 @@ flask_app = Flask('')
 def home():
     return "Bot is Alive"
 
-
 def run():
     flask_app.run(host='0.0.0.0', port=8080)
-
 
 def keep_alive():
     t = Thread(target=run)
     t.start()
 
-
 conn = sqlite3.connect("file_store.db", check_same_thread=False)
 cur = conn.cursor()
 
-cur.execute("""CREATE TABLE IF NOT EXISTS files (id TEXT, file_id TEXT, user_id INTEGER, file_name TEXT)""")
+cur.execute("""CREATE TABLE IF NOT EXISTS files (id TEXT, file_id TEXT, user_id INTEGER, file_name TEXT, file_type TEXT)""")
 cur.execute("""CREATE TABLE IF NOT EXISTS batches (batch_id TEXT, user_id INTEGER, file_ids TEXT)""")
 conn.commit()
 
 user_temp_files = {}  # Temporarily hold files per user
 
-
-def save_file(file_id, user_id, file_name):
+def save_file(file_id, user_id, file_name, file_type):
     file_unique_id = str(uuid.uuid4())
-    cur.execute("INSERT INTO files VALUES (?, ?, ?, ?)", (file_unique_id, file_id, user_id, file_name))
+    cur.execute("INSERT INTO files VALUES (?, ?, ?, ?, ?)", (file_unique_id, file_id, user_id, file_name, file_type))
     conn.commit()
     return file_unique_id
 
-
 def get_file(file_unique_id):
-    cur.execute("SELECT file_id, file_name FROM files WHERE id=?", (file_unique_id,))
+    cur.execute("SELECT file_id, file_name, file_type FROM files WHERE id=?", (file_unique_id,))
     return cur.fetchone()
-
 
 def get_user_files(user_id):
     cur.execute("SELECT id, file_name FROM files WHERE user_id=?", (user_id,))
     return cur.fetchall()
-
 
 def create_batch(user_id, file_ids):
     batch_id = str(uuid.uuid4())
@@ -69,7 +62,6 @@ def create_batch(user_id, file_ids):
     conn.commit()
     return batch_id
 
-
 def get_batch_files(batch_id):
     cur.execute("SELECT file_ids FROM batches WHERE batch_id=?", (batch_id,))
     result = cur.fetchone()
@@ -77,8 +69,7 @@ def get_batch_files(batch_id):
         return result[0].split(',')
     return []
 
-
-@app.on_message(filters.private & (filters.document | filters.photo | filters.video | filters.audio))
+@app.on_message(filters.private & (filters.document | filters.video | filters.audio | filters.photo))
 async def handle_file(client, message):
     user_id = message.from_user.id
 
@@ -86,28 +77,27 @@ async def handle_file(client, message):
         user_temp_files[user_id] = []
 
     if message.document:
-        file_id = message.document.file_id
-        file_name = message.document.file_name
-    elif message.photo:
-        file_id = message.photo.file_id
-        file_name = "Photo.jpg"
+        file = message.document
+        file_type = "document"
     elif message.video:
-        file_id = message.video.file_id
-        file_name = message.video.file_name or "Video.mp4"
+        file = message.video
+        file_type = "video"
     elif message.audio:
-        file_id = message.audio.file_id
-        file_name = message.audio.file_name or "Audio.mp3"
+        file = message.audio
+        file_type = "audio"
+    elif message.photo:
+        file = message.photo
+        file_type = "photo"
     else:
-        await message.reply_text("❌ Unsupported file type.")
         return
 
-    user_temp_files[user_id].append({'file_id': file_id, 'file_name': file_name})
+    user_temp_files[user_id].append({
+        'file_id': file.file_id,
+        'file_name': getattr(file, 'file_name', f"{file_type.upper()} File"),
+        'file_type': file_type
+    })
 
-    if message.forward_from_chat or message.forward_from:
-        await message.reply_text("✅ Forwarded file received. Send more files or type /done when you have finished uploading.")
-    else:
-        await message.reply_text("✅ File received. Send more files or type /done when you have finished uploading.")
-
+    await message.reply_text("✅ File received. Send more or type /done when finished.")
 
 @app.on_message(filters.command('done'))
 async def ask_file_action(client, message):
@@ -127,7 +117,6 @@ async def ask_file_action(client, message):
         reply_markup=InlineKeyboardMarkup(buttons)
     )
 
-
 @app.on_callback_query()
 async def handle_file_decision(client, callback_query):
     user_id = callback_query.from_user.id
@@ -142,7 +131,7 @@ async def handle_file_decision(client, callback_query):
     if callback_query.data == "singlefile":
         msg = "✅ Here are your individual file links:\n\n"
         for file in files:
-            file_unique_id = save_file(file['file_id'], user_id, file['file_name'])
+            file_unique_id = save_file(file['file_id'], user_id, file['file_name'], file['file_type'])
             link = f"https://t.me/{BOT_USERNAME}?start={file_unique_id}"
             msg += f"📄 {file['file_name']}\n🔗 {link}\n\n"
 
@@ -153,7 +142,7 @@ async def handle_file_decision(client, callback_query):
     elif callback_query.data == "batchfile":
         file_ids = []
         for file in files:
-            file_unique_id = save_file(file['file_id'], user_id, file['file_name'])
+            file_unique_id = save_file(file['file_id'], user_id, file['file_name'], file['file_type'])
             file_ids.append(file_unique_id)
 
         batch_id = create_batch(user_id, file_ids)
@@ -163,15 +152,10 @@ async def handle_file_decision(client, callback_query):
         user_temp_files[user_id] = []
         await callback_query.answer()
 
-
-@app.on_message(filters.command('createbatch'))
-async def createbatch_warning(client, message):
-    await message.reply_text("⚠️ Use the new system. Send all your files first, then type /done to proceed.")
-
-
 @app.on_message(filters.command('start'))
 async def start(client, message):
     args = message.text.split(' ', 1)
+
     if len(args) == 1:
         await message.reply_text(
             "👋 Welcome to File Store Bot!\n\n"
@@ -183,31 +167,45 @@ async def start(client, message):
             "🗂️ /myfiles - View your file history\n"
             "📁 /mybatches - View your batch history"
         )
-        return
+    else:
+        file_unique_id = args[1]
+        if file_unique_id.startswith('batch_'):
+            batch_id = file_unique_id.replace('batch_', '')
+            file_ids = get_batch_files(batch_id)
 
-    file_unique_id = args[1].strip()
-    if file_unique_id.startswith('batch_'):
-        batch_id = file_unique_id.replace('batch_', '')
-        file_ids = get_batch_files(batch_id)
+            if not file_ids:
+                await message.reply_text("❌ Batch not found or empty.")
+                return
 
-        if not file_ids:
-            await message.reply_text("❌ Batch not found or empty.")
+            await message.reply_text("📦 Sending batch files...")
+
+            for file_id in file_ids:
+                file_data = get_file(file_id)
+                if file_data:
+                    file_type = file_data[2]
+                    if file_type == "document":
+                        await message.reply_document(file_data[0], caption=f"{file_data[1]}")
+                    elif file_type == "video":
+                        await message.reply_video(file_data[0], caption=f"{file_data[1]}")
+                    elif file_type == "audio":
+                        await message.reply_audio(file_data[0], caption=f"{file_data[1]}")
+                    elif file_type == "photo":
+                        await message.reply_photo(file_data[0], caption=f"{file_data[1]}")
             return
 
-        await message.reply_text("📦 Sending batch files...")
-
-        for file_id in file_ids:
-            file_data = get_file(file_id)
-            if file_data:
-                await message.reply_document(file_data[0], caption=f"{file_data[1]}")
-        return
-
-    file_data = get_file(file_unique_id)
-    if file_data:
-        await message.reply_document(file_data[0], caption=f"Here is your file: {file_data[1]}")
-    else:
-        await message.reply_text("❌ File not found.")
-
+        file_data = get_file(file_unique_id)
+        if file_data:
+            file_type = file_data[2]
+            if file_type == "document":
+                await message.reply_document(file_data[0], caption=f"Here is your file: {file_data[1]}")
+            elif file_type == "video":
+                await message.reply_video(file_data[0], caption=f"Here is your file: {file_data[1]}")
+            elif file_type == "audio":
+                await message.reply_audio(file_data[0], caption=f"Here is your file: {file_data[1]}")
+            elif file_type == "photo":
+                await message.reply_photo(file_data[0], caption=f"Here is your file: {file_data[1]}")
+        else:
+            await message.reply_text("❌ File not found.")
 
 @app.on_message(filters.command('myfiles'))
 async def my_files(client, message):
@@ -225,7 +223,6 @@ async def my_files(client, message):
         msg += f"📄 {file_name}\n🔗 {link}\n\n"
 
     await message.reply_text(msg)
-
 
 @app.on_message(filters.command('mybatches'))
 async def my_batches(client, message):
@@ -245,7 +242,6 @@ async def my_batches(client, message):
 
     await message.reply_text(msg)
 
-
 @app.on_message(filters.command('help'))
 async def help_command(client, message):
     await message.reply_text(
@@ -255,7 +251,6 @@ async def help_command(client, message):
         "🗂️ /myfiles - View your uploaded files\n"
         "📦 /mybatches - View your batch history"
     )
-
 
 if __name__ == "__main__":
     keep_alive()
